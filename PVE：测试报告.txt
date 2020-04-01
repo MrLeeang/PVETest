@@ -1,0 +1,111 @@
+PVE：测试
+
+1、 PVE API https://pve.proxmox.com/pve-docs/api-viewer/index.html
+	1.1 pve api 全部采用restfull api
+	1.2 使用PVE API
+		1.2.1 获取资源
+			HTTP:   GET /api2/json/cluster/resources
+			参数：   type （vm | storage | node）
+		1.2.2 访问PVE资源，例如vm
+			HTTP: /api2/json/cluster/resources?type=vm
+		1.2.3 克隆虚拟机，虚拟机模板为"centos7-tpl"
+			HTTP:   	POST /api2/json/nodes/{node}/qemu/{vmid}/clone
+			参数：   newid 克隆后虚拟机id
+					 name  克隆后虚拟机名字
+
+			node和vmid在vm的json数据中有
+		1.2.4 虚拟机开机
+			HTTP:   	POST /api2/json/nodes/{node}/qemu/{vmid}/status/start
+		1.2.5 虚拟机关机
+			HTTP:   	POST /api2/json/nodes/{node}/qemu/{vmid}/status/stop
+
+
+2、 proxmoxer PVE PYTHON SDK  https://github.com/swayf/proxmoxer
+
+	1.1 安装proxmoxer
+	pip install proxmoxer paramiko requests
+
+	1.2 使用proxmoxer，sdk访问路径跟api路径一样，可以结合api文档来使用proxmoxer
+		1.2.1 登录PVE
+			from proxmoxer import ProxmoxAPI
+			proxmox = ProxmoxAPI('proxmox_host', user='admin@pam', password='secret_word', verify_ssl=False)
+		1.2.2 访问PVE资源，例如vm
+			all_vms = proxmox.cluster.resources.get(type='vm')
+		1.2.2 获取vm模板
+			all_vm_tpls = [vm if vm.get("template") for vm in all_vms]
+		1.2.3 克隆虚拟机，虚拟机模板为"centos7-tpl"
+			vm_tpl = [vm_tpl if vm_tpl.get("name") == "centos7-tpl" for vm_tpl in all_vm_tpls]
+			clone_vm_tpl = vm_tpl[0]
+			node = clone_vm_tpl.get("node")
+            vmid = clone_vm_tpl.get("vmid")
+            new_vm_id = "101"
+            proxmox.nodes(node).qemu(vmid).clone.post(name="clone-centos7-{}".format(new_vm_id), newid=new_vm_id)
+        1.2.4 虚拟机开机
+        	task_id = proxmox.nodes(node).qemu(vmid).status.start.post()
+        1.2.5 虚拟机关机
+        	task_id = proxmox.nodes(node).qemu(vmid).status.stop.post()
+        1.2.6 查询PVE任务进度
+        	task = proxmox.nodes(node).tasks(task_id).status.get()
+        	task.get("status", '') == "stopped" and task.get("exitstatus", '') == "OK"
+
+3、 安装zabbix，参考文章（https://www.cnblogs.com/zhuochong/p/10361749.html）
+	3.1 安装zabbix监控靶场节点服务器
+
+4、 靶场平台与PVE性能对比
+	4.1 PVE和靶场同时下发100个2c2g虚拟机
+	4.2 下发完成后服务器内存资源占用情况基本一致（内存消耗43G）
+	4.3 一个小时后，通过系统监控图表看出，PVE服务器内存占用率逐渐降低
+	4.4 经过研究发现，PVE使用了KSM服务进行内存压缩
+
+5、 PVE使用KSM服务进行内存压缩，实现单台服务器下发大量KVM虚拟机,参考连接（https://blog.51cto.com/3646344/2096503）
+
+	5.1、 ksm服务运行状态
+
+	cat /sys/kernel/mm/ksm/run
+
+	5.2、 正在共享得页数
+	watch cat /sys/kernel/mm/ksm/pages_sharing
+
+	5.3、 节省得内存， 管理内存是操作系统的核心职责之一。Linux系统把内存分页管理，每一页（page）的大小可以用命令getconf PAGESIZE查看，单位是字节（Byte），Linux默认的页大小为4KB。
+
+	echo "$(($(cat /sys/kernel/mm/ksm/pages_sharing)*$(getconf PAGESIZE)/1024/1024)) MB"
+
+	5.4、 ksm参数配置
+
+		KSM_MONITOR_INTERVAL=60 # 单位秒,表示每隔60秒(默认60),ksmtuned工作一次,扫描系统内存使用情况并据此调整ksm参数。数值越小ksmtuned工作频率越高,对cpu消耗越多
+
+		KSM_SLEEP_MSEC=10 # 默认值为10，最小值也为10，单位毫秒，ksm扫描内存页的间隔，数值越小ksm扫描内存页的频率越高，对cpu消耗越多。对应的内核参数是/sys/kernel/mm/ksm/sleep_millisecs；
+
+
+		KSM_NPAGES_BOOST=300
+		KSM_NPAGES_DECAY=-50
+		KSM_NPAGES_MIN=64
+		KSM_NPAGES_MAX=1250
+		这一组参数用于设置ksm一次扫描多少内存页，对应内核参数/sys/kernel/mm/ksm/pages_to_scan。pages_to_scan的值在KSM_NPAGES_MIN和KSM_NPAGES_MAX之间波动，如果空闲内存大于临界值，需要降低ksm工作强度，则每次ksmtuned工作都会调低pages_to_scan 300（KSM_NPAGES_BOOST）页；反之，需要增强ksm工作强度，则每次ksmtuned工作会调高pages_to_scan 50（KSM_NPAGES_DECAY）页。
+
+
+		KSM_THRES_COEF=20
+		KSM_THRES_CONST=2048
+
+		这两个参数用于设置一个内存临界值，总内存的20%（KSM_THRES_COEF）和2048MB（KSM_THRES_CONST）两者之间取大者。当“所有qemu进程的内存”和临界值之和小于“总内存”，并且空闲内存大于临界值时，ksm停止工作，/sys/kernel/mm/ksm/run被置0；其他情况下，ksm处于工作状态，/sys/kernel/mm/ksm/run被置1。如果想让ksm早点开始工作，可以调高临界值。
+
+	5.5、 重启服务
+	systemctl restart ksm
+	systemctl restart ksmtuned
+
+6、 靶场平台优化
+	6.1 查看KSM服务状态
+		cat /sys/kernel/mm/ksm/run
+		靶场平台KSM服务未启动
+	6.2 查看log日志
+		tail -100f /var/log/ksmtuned
+		Thu Jan 18 11:30:18 CST 2018: 13150219   < 65751096 and free > 13150219, stop ksm
+		当前内存不符合KSM运行阈值，KSM服务停止运行
+	6.3 修改KSM配置，使KSM服务运行
+		配置文件/etc/ksmtuned.conf
+		修改KSM_THRES_COEF=50，调高临界值使KSM开始工作
+	6.4 重启服务
+		systemctl restart ksm
+		systemctl restart ksmtuned
+	6.5 监控服务器性能
+		5.5.1 通过zabbix监控数据发现，服务器内存使用率在持续降低，直到低于内存阈值

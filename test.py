@@ -12,8 +12,8 @@ import time
 import json
 import sys
 
-proxmox = ProxmoxAPI('192.168.161.20', user='root@pam',
-                     password='1Password.@integrity', verify_ssl=False)
+proxmox = ProxmoxAPI('192.168.1.10', user='root@pam',
+                     password='xxx', verify_ssl=False)
 
 
 def clone_vm():
